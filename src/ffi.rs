@@ -669,6 +669,7 @@ impl NiceCandidateRef {
             generation: None,
             ufrag: None,
             networkcost: None,
+            unknown_extensions: Vec::new(),
         }
     }
 }

@@ -11,7 +11,8 @@ repository = "https://github.com/johni0702/rust-libnice"
 libnice-sys = "0.1"
 foreign-types = "0.3"
 futures = "0.1"
-webrtc-sdp = "0.1"
+# webrtc-sdp = "0.2"
+webrtc-sdp = { git = "https://github.com/nils-ohlmeier/rsdparsa/", rev = "ccf6249" }
 tokio-io = "0.1"
 
 [dev-dependencies]
