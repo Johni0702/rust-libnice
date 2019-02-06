@@ -188,6 +188,7 @@ pub struct StreamBuilder<'a> {
     agent: &'a mut Agent,
     components: sys::guint,
     inbound_buf_size: usize,
+    port_ranges: HashMap<usize, (u16, u16)>,
 }
 
 impl<'a> StreamBuilder<'a> {
@@ -197,12 +198,53 @@ impl<'a> StreamBuilder<'a> {
             agent,
             components: components as sys::guint,
             inbound_buf_size: 10,
+            port_ranges: HashMap::new(),
         }
     }
 
     /// Sets the size of the buffer used to store inbound packets.
     pub fn set_inbound_buffer_size(&mut self, size: usize) -> &mut Self {
         self.inbound_buf_size = size;
+        self
+    }
+
+    /// Limits the range of ports used for host candidates.
+    ///
+    /// If the range is exhausted, [build] will fail.
+    /// To set the range per component, use [set_component_port_range].
+    pub fn set_port_range(
+        &mut self,
+        min_port: u16,
+        max_port: u16,
+    ) -> &mut Self {
+        for i in 0..self.components as usize {
+            self.port_ranges.insert(i, (min_port, max_port));
+        }
+        self
+    }
+
+    /// Limits the range of ports used for host candidates for the component at the specified index.
+    /// Note that the first component (with id `1`) is at index `0`.
+    ///
+    /// If the range is exhausted, [build] will fail.
+    /// To set the range for all components, use [set_port_range].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `component_index >= components`.
+    pub fn set_component_port_range(
+        &mut self,
+        component_index: usize,
+        min_port: u16,
+        max_port: u16,
+    ) -> &mut Self {
+        if component_index >= self.components as usize {
+            panic!(
+                "index {} of of range (size: {})",
+                component_index, self.components
+            );
+        }
+        self.port_ranges.insert(component_index, (min_port, max_port));
         self
     }
 
@@ -251,6 +293,10 @@ impl<'a> StreamBuilder<'a> {
             .lock()
             .unwrap()
             .insert(id, candidate_sink);
+
+        for (index, (min_port, max_port)) in &self.port_ranges {
+            ffi.set_port_range(id, *index as sys::guint + 1, *min_port, *max_port);
+        }
 
         ffi.gather_candidates(id)?;
 

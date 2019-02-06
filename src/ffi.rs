@@ -401,6 +401,27 @@ impl NiceAgent {
         Ok(res as usize)
     }
 
+    /// Limits the range of ports used for host candidates.
+    /// If this agent has exhausted the specified range, [gather_candidates] will fail.
+    /// Must be called before [gather_candidates].
+    pub fn set_port_range(
+        &self,
+        stream_id: sys::guint,
+        component_id: sys::guint,
+        min_port: u16,
+        max_port: u16,
+    ) {
+        unsafe {
+            sys::nice_agent_set_port_range(
+                self.ptr,
+                stream_id,
+                component_id,
+                min_port.into(),
+                max_port.into(),
+            )
+        }
+    }
+
     /// Sends data via the specified stream component.
     /// [libnice] documentation.
     ///
