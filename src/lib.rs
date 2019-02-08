@@ -8,6 +8,9 @@
 //!
 //! [libnice]: https://nice.freedesktop.org/libnice/
 
+#[macro_use] // need macro_use, see: https://github.com/gtk-rs/glib/issues/420
+extern crate glib;
+
 /// Low-level, unsafe FFI bindings.
 pub use libnice_sys as sys;
 

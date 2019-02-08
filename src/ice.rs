@@ -1,4 +1,4 @@
-/// See [test::connects_and_transmits_data] for a usage example.
+//! See [test::connects_and_transmits_data] for a usage example.
 use crate::ffi;
 use futures::sync::mpsc;
 use futures::Async;
@@ -7,10 +7,12 @@ use futures::Future;
 use futures::Poll;
 use futures::Sink;
 use futures::Stream as FuturesStream;
-use libnice_sys as sys;
+use glib::MainContext;
+use glib::MainLoop;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
+use std::os::raw::c_uint;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -19,7 +21,7 @@ pub use crate::ffi::NiceCompatibility;
 pub use crate::ffi::NiceComponentState as ComponentState;
 pub use webrtc_sdp::attribute_type::SdpAttributeCandidate as Candidate;
 
-type ComponentId = (sys::guint, sys::guint);
+type ComponentId = (c_uint, c_uint);
 
 /// A single, high-level ICE agent.
 ///
@@ -28,12 +30,12 @@ type ComponentId = (sys::guint, sys::guint);
 ///
 /// [`poll()`ed]: Future::poll
 pub struct Agent {
-    ctx: ffi::GMainContext,
+    ctx: MainContext,
     agent: ffi::NiceAgent,
-    main_loop: ffi::GMainLoop,
+    main_loop: MainLoop,
     msgs_sender: mpsc::UnboundedSender<ControlMsg>,
     msgs: mpsc::UnboundedReceiver<ControlMsg>,
-    candidate_sinks: Arc<Mutex<HashMap<sys::guint, mpsc::UnboundedSender<Candidate>>>>,
+    candidate_sinks: Arc<Mutex<HashMap<c_uint, mpsc::UnboundedSender<Candidate>>>>,
     state_sinks: Arc<Mutex<HashMap<ComponentId, mpsc::Sender<ComponentState>>>>,
 }
 
@@ -46,13 +48,14 @@ impl Agent {
     /// Creates a new ICE agent with the specified compatibility mode.
     pub fn new(compat: NiceCompatibility) -> Self {
         // Initialize FFI structs
-        let ctx = ffi::GMainContext::new();
-        let main_loop = ffi::GMainLoop::new(&ctx);
+        let ctx = MainContext::new();
+        let main_loop = MainLoop::new(&ctx, false);
         let mut agent = ffi::NiceAgent::new(&ctx, compat);
 
         // Start main loop on new thread
         let main_loop_clone = main_loop.clone();
         std::thread::spawn(move || {
+            // FIXME acquire
             main_loop_clone.run();
         });
 
@@ -60,7 +63,7 @@ impl Agent {
         let (msgs_sender, msgs) = mpsc::unbounded();
 
         // Channel for sending candidates to streams
-        let candidate_sinks: Arc<Mutex<HashMap<sys::guint, mpsc::UnboundedSender<Candidate>>>> =
+        let candidate_sinks: Arc<Mutex<HashMap<c_uint, mpsc::UnboundedSender<Candidate>>>> =
             Default::default();
         let candidate_sinks_clone = Arc::clone(&candidate_sinks);
         agent
@@ -109,8 +112,8 @@ impl Agent {
         }
     }
 
-    /// Returns the low-level context this agent is running on.
-    pub fn get_ffi_ctx(&self) -> &ffi::GMainContext {
+    /// Returns the context this agent is running on.
+    pub fn get_ctx(&self) -> &MainContext {
         &self.ctx
     }
 
@@ -144,8 +147,8 @@ impl Agent {
             }
             ControlMsg::AddRemoteCandidate((stream_id, component_id), candidate) => {
                 let candidate = ffi::NiceCandidate::from_sdp(&candidate);
-                let candidate = candidate.as_ref();
-                let candidates = std::slice::from_ref(&candidate);
+                let candidate_ref = &candidate;
+                let candidates = std::slice::from_ref(&candidate_ref);
                 let _ = self
                     .agent
                     .add_remote_candidates(stream_id, component_id, candidates);
@@ -186,7 +189,7 @@ impl Future for Agent {
 /// Builder for ICE [Stream]s.
 pub struct StreamBuilder<'a> {
     agent: &'a mut Agent,
-    components: sys::guint,
+    components: usize,
     inbound_buf_size: usize,
     port_ranges: HashMap<usize, (u16, u16)>,
 }
@@ -196,7 +199,7 @@ impl<'a> StreamBuilder<'a> {
     pub fn new(agent: &'a mut Agent, components: usize) -> Self {
         Self {
             agent,
-            components: components as sys::guint,
+            components,
             inbound_buf_size: 10,
             port_ranges: HashMap::new(),
         }
@@ -212,12 +215,8 @@ impl<'a> StreamBuilder<'a> {
     ///
     /// If the range is exhausted, [build] will fail.
     /// To set the range per component, use [set_component_port_range].
-    pub fn set_port_range(
-        &mut self,
-        min_port: u16,
-        max_port: u16,
-    ) -> &mut Self {
-        for i in 0..self.components as usize {
+    pub fn set_port_range(&mut self, min_port: u16, max_port: u16) -> &mut Self {
+        for i in 0..self.components {
             self.port_ranges.insert(i, (min_port, max_port));
         }
         self
@@ -238,13 +237,14 @@ impl<'a> StreamBuilder<'a> {
         min_port: u16,
         max_port: u16,
     ) -> &mut Self {
-        if component_index >= self.components as usize {
+        if component_index >= self.components {
             panic!(
                 "index {} of of range (size: {})",
                 component_index, self.components
             );
         }
-        self.port_ranges.insert(component_index, (min_port, max_port));
+        self.port_ranges
+            .insert(component_index, (min_port, max_port));
         self
     }
 
@@ -254,7 +254,7 @@ impl<'a> StreamBuilder<'a> {
         let state_sinks = &mut agent.state_sinks;
         let ffi = &mut agent.agent;
 
-        let id = ffi.add_stream(self.components)?;
+        let id = ffi.add_stream(self.components as c_uint)?;
         let (local_ufrag, local_pwd) = ffi.get_local_credentials(id).expect("local credentials");
         let local_ufrag = local_ufrag
             .into_string()
@@ -264,10 +264,10 @@ impl<'a> StreamBuilder<'a> {
             .expect("generated pwd is valid utf8");
 
         let mut components = Vec::new();
-        for i in 0..self.components {
+        for i in 0..(self.components as c_uint) {
             let component_id = i + 1;
             let (mut source_sender, source) = mpsc::channel(self.inbound_buf_size);
-            ffi.attach_recv(id, component_id, &agent.ctx, move |buf| {
+            let recv_handle = ffi.attach_recv(id, component_id, &agent.ctx, move |buf| {
                 let _ = source_sender.try_send(buf.to_vec());
             })?;
 
@@ -278,6 +278,7 @@ impl<'a> StreamBuilder<'a> {
                 .insert((id, component_id), state_sender);
 
             components.push(StreamComponent {
+                _recv_handle: recv_handle,
                 stream_id: id,
                 component_id,
                 state: ComponentState::Disconnected,
@@ -295,7 +296,7 @@ impl<'a> StreamBuilder<'a> {
             .insert(id, candidate_sink);
 
         for (index, (min_port, max_port)) in &self.port_ranges {
-            ffi.set_port_range(id, *index as sys::guint + 1, *min_port, *max_port);
+            ffi.set_port_range(id, *index as c_uint + 1, *min_port, *max_port);
         }
 
         ffi.gather_candidates(id)?;
@@ -312,7 +313,7 @@ impl<'a> StreamBuilder<'a> {
 }
 
 enum ControlMsg {
-    SetRemoteCredentials(sys::guint, CString, CString),
+    SetRemoteCredentials(c_uint, CString, CString),
     AddRemoteCandidate(ComponentId, Candidate),
     Send(ComponentId, Vec<u8>),
 }
@@ -322,7 +323,7 @@ enum ControlMsg {
 /// Implements [futures::Stream] which emits the local ICE candidates for this stream as they are
 /// being discovered.
 pub struct Stream {
-    id: sys::guint,
+    id: c_uint,
     local_ufrag: String,
     local_pwd: String,
     msg_sink: mpsc::UnboundedSender<ControlMsg>,
@@ -396,8 +397,9 @@ impl FuturesStream for Stream {
 /// [AsyncRead]: tokio_io::AsyncRead
 /// [AsyncWrite]: tokio_io::AsyncWrite
 pub struct StreamComponent {
-    stream_id: sys::guint,
-    component_id: sys::guint,
+    _recv_handle: ffi::AttachRecvHandle,
+    stream_id: c_uint,
+    component_id: c_uint,
     state: ComponentState,
     state_stream: mpsc::Receiver<ComponentState>,
     source: mpsc::Receiver<Vec<u8>>,

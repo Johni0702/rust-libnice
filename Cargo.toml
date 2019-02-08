@@ -8,8 +8,11 @@ license = "LGPL-2.1 OR MPL-1.1"
 repository = "https://github.com/johni0702/rust-libnice"
 
 [dependencies]
-libnice-sys = "0.1"
-foreign-types = "0.3"
+libnice-sys = "0.2"
+libc = "0.2"
+glib-sys = "0.7"
+gobject-sys = "0.7"
+glib = "0.6"
 futures = "0.1"
 webrtc-sdp = "0.1"
 tokio-io = "0.1"
