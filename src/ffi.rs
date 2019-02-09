@@ -1,5 +1,4 @@
 #![allow(clippy::ptr_offset_with_cast)] // glib_wrapper emits these
-use glib::AnyValue;
 use glib::BoolError;
 use glib::MainContext;
 use glib::ObjectExt;
@@ -68,8 +67,7 @@ impl NiceAgent {
         f: F,
     ) -> BoolResult<SignalHandlerId> {
         self.connect("new-candidate-full", false, move |values| {
-            let val: &AnyValue = values[1].get().unwrap();
-            f(val.downcast_ref().unwrap());
+            f(&values[1].get().unwrap());
             None
         })
     }
@@ -373,6 +371,10 @@ glib_wrapper! {
     match fn {
         copy => |ptr| sys::nice_candidate_copy(ptr),
         free => |ptr| sys::nice_candidate_free(ptr),
+        // Cannot use the obvious solution as it is only available in the latest release
+        // which will take some time to be distributed everywhere
+        // get_type => || sys::nice_candidate_get_type(),
+        get_type => || glib::Type::from_name("NiceCandidate").unwrap().to_glib(),
     }
 }
 
