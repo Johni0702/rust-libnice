@@ -1,4 +1,4 @@
-//! See [test::connects_and_transmits_data] for a usage example.
+//! See `test::connects_and_transmits_data` for a usage example.
 use crate::ffi;
 use futures::sync::mpsc;
 use futures::Async;
@@ -213,8 +213,8 @@ impl<'a> StreamBuilder<'a> {
 
     /// Limits the range of ports used for host candidates.
     ///
-    /// If the range is exhausted, [build] will fail.
-    /// To set the range per component, use [set_component_port_range].
+    /// If the range is exhausted, [StreamBuilder::build] will fail.
+    /// To set the range per component, use [StreamBuilder::set_component_port_range].
     pub fn set_port_range(&mut self, min_port: u16, max_port: u16) -> &mut Self {
         for i in 0..self.components {
             self.port_ranges.insert(i, (min_port, max_port));
@@ -225,8 +225,8 @@ impl<'a> StreamBuilder<'a> {
     /// Limits the range of ports used for host candidates for the component at the specified index.
     /// Note that the first component (with id `1`) is at index `0`.
     ///
-    /// If the range is exhausted, [build] will fail.
-    /// To set the range for all components, use [set_port_range].
+    /// If the range is exhausted, [StreamBuilder::build] will fail.
+    /// To set the range for all components, use [StreamBuilder::set_port_range].
     ///
     /// # Panics
     ///

@@ -225,8 +225,8 @@ impl NiceAgent {
     }
 
     /// Limits the range of ports used for host candidates.
-    /// If this agent has exhausted the specified range, [gather_candidates] will fail.
-    /// Must be called before [gather_candidates].
+    /// If this agent has exhausted the specified range, [NiceAgent::gather_candidates] will fail.
+    /// Must be called before [NiceAgent::gather_candidates].
     pub fn set_port_range(
         &self,
         stream_id: c_uint,
@@ -325,8 +325,8 @@ impl NiceAgent {
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-attach-recv
     ///
-    /// Note that the callback itself is only dropped once the handle returned from [attach_recv]
-    /// is dropped.
+    /// Note that the callback itself is only dropped once the handle returned from
+    /// [NiceAgent::attach_recv] is dropped.
     pub fn detach_recv(
         &mut self,
         stream_id: c_uint,
@@ -350,7 +350,7 @@ impl NiceAgent {
     }
 }
 
-/// Handle keeping a callback alive which was previously attached with [attach_recv].
+/// Handle keeping a callback alive which was previously attached with [NiceAgent::attach_recv].
 ///
 /// Dropping this handle will detach **any** currently attached callback for the same component.
 #[must_use = "when an AttachRecvHandle is dropped, it detaches the callback"]
@@ -478,8 +478,7 @@ impl NiceCandidate {
 
     /// Sets the `foundation` field.
     ///
-    /// **Note**: Panics if the supplied foundation is longer than
-    ///           [sys::NICE_CANDIDATE_MAX_FOUNDATION].
+    /// **Note**: Panics if the supplied foundation is longer than 32 bytes.
     pub fn set_foundation(&mut self, foundation: &CStr) {
         let self_foundation = unsafe { &mut (*self.to_glib_none_mut().0).foundation };
         let foundation = foundation.to_bytes_with_nul();
