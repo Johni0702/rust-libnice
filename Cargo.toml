@@ -8,7 +8,7 @@ license = "LGPL-2.1 OR MPL-1.1"
 repository = "https://github.com/johni0702/rust-libnice"
 
 [dependencies]
-libnice-sys = "0.1"
+libnice-sys = { git = "https://github.com/abbradar/rust-libnice-sys", rev = "78b0b60" }
 foreign-types = "0.3"
 futures = "0.1"
 # webrtc-sdp = "0.2"
