@@ -7,19 +7,19 @@ use futures::Future;
 use futures::Poll;
 use futures::Sink;
 use futures::Stream as FuturesStream;
-use libnice_sys as sys;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::os::raw::c_uint;
 
 pub use crate::ffi::BoolResult;
 pub use crate::ffi::NiceCompatibility;
 pub use crate::ffi::NiceComponentState as ComponentState;
 pub use webrtc_sdp::attribute_type::SdpAttributeCandidate as Candidate;
 
-type ComponentId = (sys::guint, sys::guint);
+type ComponentId = (c_uint, c_uint);
 
 /// A single, high-level ICE agent.
 ///
@@ -33,7 +33,7 @@ pub struct Agent {
     main_loop: ffi::GMainLoop,
     msgs_sender: mpsc::UnboundedSender<ControlMsg>,
     msgs: mpsc::UnboundedReceiver<ControlMsg>,
-    candidate_sinks: Arc<Mutex<HashMap<sys::guint, mpsc::UnboundedSender<Candidate>>>>,
+    candidate_sinks: Arc<Mutex<HashMap<c_uint, mpsc::UnboundedSender<Candidate>>>>,
     state_sinks: Arc<Mutex<HashMap<ComponentId, mpsc::Sender<ComponentState>>>>,
 }
 
@@ -60,7 +60,7 @@ impl Agent {
         let (msgs_sender, msgs) = mpsc::unbounded();
 
         // Channel for sending candidates to streams
-        let candidate_sinks: Arc<Mutex<HashMap<sys::guint, mpsc::UnboundedSender<Candidate>>>> =
+        let candidate_sinks: Arc<Mutex<HashMap<c_uint, mpsc::UnboundedSender<Candidate>>>> =
             Default::default();
         let candidate_sinks_clone = Arc::clone(&candidate_sinks);
         agent
@@ -186,7 +186,9 @@ impl Future for Agent {
 /// Builder for ICE [Stream]s.
 pub struct StreamBuilder<'a> {
     agent: &'a mut Agent,
-    components: sys::guint,
+    components: c_uint,
+    min_port: c_uint,
+    max_port: c_uint,
     inbound_buf_size: usize,
 }
 
@@ -195,14 +197,24 @@ impl<'a> StreamBuilder<'a> {
     pub fn new(agent: &'a mut Agent, components: usize) -> Self {
         Self {
             agent,
-            components: components as sys::guint,
+            components: components as c_uint,
             inbound_buf_size: 10,
+            min_port: 0,
+            max_port: 0,
         }
     }
 
     /// Sets the size of the buffer used to store inbound packets.
     pub fn set_inbound_buffer_size(&mut self, size: usize) -> &mut Self {
         self.inbound_buf_size = size;
+        self
+    }
+
+    /// Sets incoming port range for establishing connections.
+    /// Zero min_port means "any range".
+    pub fn set_port_range(&mut self, min_port: u16, max_port: u16) -> &mut Self {
+        self.min_port = min_port as c_uint;
+        self.max_port = max_port as c_uint;
         self
     }
 
@@ -228,6 +240,10 @@ impl<'a> StreamBuilder<'a> {
             ffi.attach_recv(id, component_id, &agent.ctx, move |buf| {
                 let _ = source_sender.try_send(buf.to_vec());
             })?;
+
+            if self.min_port != 0 {
+                ffi.set_port_range(id, component_id, self.min_port, self.max_port);
+            }
 
             let (state_sender, state_stream) = mpsc::channel(8);
             state_sinks
@@ -266,7 +282,7 @@ impl<'a> StreamBuilder<'a> {
 }
 
 enum ControlMsg {
-    SetRemoteCredentials(sys::guint, CString, CString),
+    SetRemoteCredentials(c_uint, CString, CString),
     AddRemoteCandidate(ComponentId, Candidate),
     Send(ComponentId, Vec<u8>),
 }
@@ -276,7 +292,7 @@ enum ControlMsg {
 /// Implements [futures::Stream] which emits the local ICE candidates for this stream as they are
 /// being discovered.
 pub struct Stream {
-    id: sys::guint,
+    id: c_uint,
     local_ufrag: String,
     local_pwd: String,
     msg_sink: mpsc::UnboundedSender<ControlMsg>,
@@ -350,8 +366,8 @@ impl FuturesStream for Stream {
 /// [AsyncRead]: tokio_io::AsyncRead
 /// [AsyncWrite]: tokio_io::AsyncWrite
 pub struct StreamComponent {
-    stream_id: sys::guint,
-    component_id: sys::guint,
+    stream_id: c_uint,
+    component_id: c_uint,
     state: ComponentState,
     state_stream: mpsc::Receiver<ComponentState>,
     source: mpsc::Receiver<Vec<u8>>,

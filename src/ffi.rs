@@ -9,19 +9,22 @@ use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
-use std::os::raw::c_char;
+use std::os::raw::{c_uint,c_char};
 use std::ptr;
+use libc;
 use webrtc_sdp::attribute_type::SdpAttributeCandidate;
 use webrtc_sdp::attribute_type::SdpAttributeCandidateTcpType;
 use webrtc_sdp::attribute_type::SdpAttributeCandidateTransport;
 use webrtc_sdp::attribute_type::SdpAttributeCandidateType;
 
 use libnice_sys as sys;
+use glib_sys as glib;
+use gobject_sys as gobject;
 
 foreign_type! {
-    type CType = sys::GMainContext;
-    fn drop = sys::g_main_context_unref;
-    fn clone = sys::g_main_context_ref;
+    type CType = glib::GMainContext;
+    fn drop = glib::g_main_context_unref;
+    fn clone = glib::g_main_context_ref;
     /// See the [glib] documentation.
     ///
     /// [glib]: https://developer.gnome.org/glib/stable/glib-The-Main-Event-Loop.html#GMainContext
@@ -34,7 +37,7 @@ unsafe impl Send for GMainContext {}
 impl GMainContext {
     /// Creates a new GMainContext
     pub fn new() -> Self {
-        Self(unsafe { sys::g_main_context_new() })
+        Self(unsafe { glib::g_main_context_new() })
     }
 }
 
@@ -49,7 +52,7 @@ impl GMainContextRef {
     ///
     /// [glib]: https://developer.gnome.org/glib/stable/glib-The-Main-Event-Loop.html#g-main-context-acquire
     pub fn acquire(&self) -> Option<AcquiredGMainContext> {
-        if unsafe { sys::g_main_context_acquire(self.as_ptr()) != 0 } {
+        if unsafe { glib::g_main_context_acquire(self.as_ptr()) != 0 } {
             Some(AcquiredGMainContext(&self))
         } else {
             None
@@ -62,14 +65,14 @@ impl GMainContextRef {
 pub struct AcquiredGMainContext<'a>(&'a GMainContextRef);
 impl<'a> Drop for AcquiredGMainContext<'a> {
     fn drop(&mut self) {
-        unsafe { sys::g_main_context_release(self.0.as_ptr()) }
+        unsafe { glib::g_main_context_release(self.0.as_ptr()) }
     }
 }
 
 foreign_type! {
-    type CType = sys::GMainLoop;
-    fn drop = sys::g_main_loop_unref;
-    fn clone = sys::g_main_loop_ref;
+    type CType = glib::GMainLoop;
+    fn drop = glib::g_main_loop_unref;
+    fn clone = glib::g_main_loop_ref;
     /// See the [glib] documentation.
     ///
     /// [glib]: https://developer.gnome.org/glib/stable/glib-The-Main-Event-Loop.html
@@ -82,14 +85,14 @@ unsafe impl Send for GMainLoop {}
 impl GMainLoop {
     /// Creates a new GMainLoop.
     pub fn new(ctx: &GMainContextRef) -> Self {
-        Self(unsafe { sys::g_main_loop_new(ctx.as_ptr(), 0) })
+        Self(unsafe { glib::g_main_loop_new(ctx.as_ptr(), 0) })
     }
 }
 
 impl GMainLoopRef {
     /// Returns the context of this loop.
     pub fn get_context(&self) -> &GMainContextRef {
-        unsafe { GMainContextRef::from_ptr(sys::g_main_loop_get_context(self.as_ptr())) }
+        unsafe { GMainContextRef::from_ptr(glib::g_main_loop_get_context(self.as_ptr())) }
     }
 
     /// Runs the loop, blocking this thread until [GMainLoopRef::quit] is called.
@@ -98,7 +101,7 @@ impl GMainLoopRef {
             .get_context()
             .acquire()
             .expect("failed to acquire context");
-        unsafe { sys::g_main_loop_run(self.as_ptr()) }
+        unsafe { glib::g_main_loop_run(self.as_ptr()) }
         std::mem::drop(acquired_ctx);
     }
 
@@ -106,7 +109,7 @@ impl GMainLoopRef {
     ///
     /// See [GMainLoopRef::run]
     pub fn quit(&self) {
-        unsafe { sys::g_main_loop_quit(self.as_ptr()) }
+        unsafe { glib::g_main_loop_quit(self.as_ptr()) }
     }
 }
 
@@ -115,7 +118,7 @@ impl GMainLoopRef {
 /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html
 pub struct NiceAgent {
     ptr: *mut sys::NiceAgent,
-    recv_callbacks: HashMap<(sys::guint, sys::guint), Box<Any>>,
+    recv_callbacks: HashMap<(c_uint, c_uint), Box<dyn Any>>,
 }
 
 /// Either `Ok(T)` or `Err` with a string description of the function that failed.
@@ -152,13 +155,13 @@ impl NiceAgent {
         self.ptr
     }
 
-    /// Returns a pointer to the raw nice agent as a [sys::GObject].
+    /// Returns a pointer to the raw nice agent as a [gobject::GObject].
     ///
     /// # Safety
     /// See [NiceAgent::as_ptr].
     #[allow(clippy::cast_ptr_alignment)] // libnice should always return properly aligned pointers
-    pub fn as_gobject_ptr(&self) -> *mut sys::GObject {
-        self.ptr as *mut sys::GObject
+    pub fn as_gobject_ptr(&self) -> *mut gobject::GObject {
+        self.ptr as *mut gobject::GObject
     }
 
     /// Attaches a callback function to the specified signal.
@@ -168,18 +171,18 @@ impl NiceAgent {
         wrapper: extern "C" fn(),
         user_data: UserData,
     ) -> BoolResult<()> {
-        extern "C" fn drop<UserData>(user_data: sys::gpointer, _closure: *mut sys::GClosure) {
+        extern "C" fn drop<UserData>(user_data: glib::gpointer, _closure: *mut gobject::GClosure) {
             let user_data = user_data as *mut UserData;
             let boxed_user_data = unsafe { Box::from_raw(user_data) };
             std::mem::drop(boxed_user_data);
         }
         let signal = CString::new(signal).expect("valid signal name");
         let res = unsafe {
-            sys::g_signal_connect_data(
-                self.ptr as sys::gpointer,
+            gobject::g_signal_connect_data(
+                self.ptr as *mut gobject::GObject,
                 signal.as_ptr(),
                 Some(wrapper),
-                Box::into_raw(Box::new(user_data)) as sys::gpointer,
+                Box::into_raw(Box::new(user_data)) as glib::gpointer,
                 Some(drop::<UserData>),
                 0,
             )
@@ -198,7 +201,7 @@ impl NiceAgent {
         extern "C" fn wrapper<F: FnMut(&NiceCandidateRef) + Send + 'static>(
             _agent: *mut sys::NiceAgent,
             candidate: *mut sys::NiceCandidate,
-            user_data: sys::gpointer,
+            user_data: glib::gpointer,
         ) {
             let f_ptr = user_data as *mut F;
             let f = unsafe { &mut *f_ptr };
@@ -213,14 +216,14 @@ impl NiceAgent {
     }
 
     /// Attaches a callback function to the `candidate-gathering-done` signal.
-    pub fn on_candidate_gathering_done<F: FnMut(sys::guint) + Send + 'static>(
+    pub fn on_candidate_gathering_done<F: FnMut(c_uint) + Send + 'static>(
         &mut self,
         f: F,
     ) -> BoolResult<()> {
-        extern "C" fn wrapper<F: FnMut(sys::guint) + Send + 'static>(
+        extern "C" fn wrapper<F: FnMut(c_uint) + Send + 'static>(
             _agent: *mut sys::NiceAgent,
-            stream_id: sys::guint,
-            user_data: sys::gpointer,
+            stream_id: c_uint,
+            user_data: glib::gpointer,
         ) {
             let f_ptr = user_data as *mut F;
             let f = unsafe { &mut *f_ptr };
@@ -235,19 +238,19 @@ impl NiceAgent {
 
     /// Attaches a callback function to the `component-state-changed` signal.
     pub fn on_component_state_changed<
-        F: FnMut(sys::guint, sys::guint, NiceComponentState) + Send + 'static,
+        F: FnMut(c_uint, c_uint, NiceComponentState) + Send + 'static,
     >(
         &mut self,
         f: F,
     ) -> BoolResult<()> {
         extern "C" fn wrapper<
-            F: FnMut(sys::guint, sys::guint, NiceComponentState) + Send + 'static,
+            F: FnMut(c_uint, c_uint, NiceComponentState) + Send + 'static,
         >(
             _agent: *mut sys::NiceAgent,
-            stream_id: sys::guint,
-            component_id: sys::guint,
-            state: sys::guint,
-            user_data: sys::gpointer,
+            stream_id: c_uint,
+            component_id: c_uint,
+            state: c_uint,
+            user_data: glib::gpointer,
         ) {
             let f_ptr = user_data as *mut F;
             let f = unsafe { &mut *f_ptr };
@@ -266,8 +269,8 @@ impl NiceAgent {
     /// # Safety
     /// The property name and value pointers must be valid, the property must exist and the value
     /// must be of the correct type.
-    pub unsafe fn set_property(&mut self, name: *const sys::gchar, value: *const sys::GValue) {
-        sys::g_object_set_property(self.as_gobject_ptr(), name, value);
+    pub unsafe fn set_property(&mut self, name: *const c_char, value: *const gobject::GValue) {
+        gobject::g_object_set_property(self.as_gobject_ptr(), name, value);
     }
 
     /// See the [libnice] documentation.
@@ -284,9 +287,9 @@ impl NiceAgent {
     pub fn set_controlling_mode(&mut self, controlling: bool) {
         unsafe {
             let mut value = new_g_value(G_TYPE_BOOLEAN);
-            sys::g_value_set_boolean(&mut value, controlling as i32);
+            gobject::g_value_set_boolean(&mut value, controlling as i32);
             self.set_property(
-                "controlling-mode\0" as *const str as *const sys::gchar,
+                "controlling-mode\0" as *const str as *const c_char,
                 &value,
             );
         }
@@ -296,7 +299,7 @@ impl NiceAgent {
     /// [libnice] documentation.
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-add-stream
-    pub fn add_stream(&self, components: sys::guint) -> BoolResult<sys::guint> {
+    pub fn add_stream(&self, components: c_uint) -> BoolResult<c_uint> {
         let id = unsafe { sys::nice_agent_add_stream(self.ptr, components) };
         if id == 0 {
             return Err("add_stream failed");
@@ -308,7 +311,7 @@ impl NiceAgent {
     /// [libnice] documentation.
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-gather-candidates
-    pub fn gather_candidates(&self, stream_id: sys::guint) -> BoolResult<()> {
+    pub fn gather_candidates(&self, stream_id: c_uint) -> BoolResult<()> {
         if unsafe { sys::nice_agent_gather_candidates(self.ptr, stream_id) } == 0 {
             return Err("gather_candidates failed");
         }
@@ -321,7 +324,7 @@ impl NiceAgent {
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-set-remote-credentials
     pub fn set_remote_credentials(
         &self,
-        stream_id: sys::guint,
+        stream_id: c_uint,
         ufrag: &CStr,
         pwd: &CStr,
     ) -> BoolResult<()> {
@@ -343,7 +346,7 @@ impl NiceAgent {
     /// [libnice] documentation.
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-get-local-credentials
-    pub fn get_local_credentials(&self, stream_id: sys::guint) -> BoolResult<(CString, CString)> {
+    pub fn get_local_credentials(&self, stream_id: c_uint) -> BoolResult<(CString, CString)> {
         let mut ufrag_ptr: *mut c_char = ptr::null_mut();
         let mut pwd_ptr: *mut c_char = ptr::null_mut();
         if unsafe {
@@ -355,10 +358,23 @@ impl NiceAgent {
         let ufrag = unsafe { CStr::from_ptr(ufrag_ptr) }.to_owned();
         let pwd = unsafe { CStr::from_ptr(pwd_ptr) }.to_owned();
         unsafe {
-            sys::g_free(ufrag_ptr as sys::gpointer);
-            sys::g_free(pwd_ptr as sys::gpointer);
+            glib::g_free(ufrag_ptr as glib::gpointer);
+            glib::g_free(pwd_ptr as glib::gpointer);
         }
         Ok((ufrag, pwd))
+    }
+
+    /// See the [libnice] documentation.
+    ///
+    /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-set-port-range
+    pub fn set_port_range(
+        &self,
+        stream_id: c_uint,
+        component_id: c_uint,
+        min_port: c_uint,
+        max_port: c_uint,
+    ) {
+        unsafe { sys::nice_agent_set_port_range(self.ptr, stream_id, component_id, min_port, max_port) }
     }
 
     /// Adds a remote ICE candidate for a particular stream component.
@@ -367,14 +383,14 @@ impl NiceAgent {
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-set-remote-candidates
     pub fn add_remote_candidates(
         &self,
-        stream_id: sys::guint,
-        component_id: sys::guint,
+        stream_id: c_uint,
+        component_id: c_uint,
         candidates: &[&NiceCandidateRef],
     ) -> BoolResult<usize> {
         let mut list_entries = candidates
             .iter()
-            .map(|item| sys::GSList {
-                data: item.as_ptr() as sys::gpointer,
+            .map(|item| glib::GSList {
+                data: item.as_ptr() as glib::gpointer,
                 next: ptr::null_mut(),
             })
             .collect::<Vec<_>>();
@@ -382,7 +398,7 @@ impl NiceAgent {
             .iter_mut()
             .fold(ptr::null_mut(), |next, entry| {
                 (*entry).next = next;
-                entry as *mut sys::GSList
+                entry as *mut glib::GSList
             });
         // FIXME what does this function actually do? the docs talk about add but its name says set
         let res = unsafe {
@@ -392,7 +408,7 @@ impl NiceAgent {
                 component_id,
                 list_entries
                     .last()
-                    .map_or_else(ptr::null, |head| head as *const sys::GSList),
+                    .map_or_else(ptr::null, |head| head as *const glib::GSList),
             )
         };
         if res < 0 {
@@ -407,8 +423,8 @@ impl NiceAgent {
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-send
     pub fn send(
         &self,
-        stream_id: sys::guint,
-        component_id: sys::guint,
+        stream_id: c_uint,
+        component_id: c_uint,
         buf: &[u8],
     ) -> Option<usize> {
         let res = unsafe {
@@ -416,7 +432,7 @@ impl NiceAgent {
                 self.ptr,
                 stream_id,
                 component_id,
-                buf.len() as sys::guint,
+                buf.len() as c_uint,
                 buf.as_ptr() as *const i8,
             )
         };
@@ -433,18 +449,18 @@ impl NiceAgent {
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-attach-recv
     pub fn attach_recv<F: FnMut(&[u8]) + Send + 'static>(
         &mut self,
-        stream_id: sys::guint,
-        component_id: sys::guint,
+        stream_id: c_uint,
+        component_id: c_uint,
         ctx: &GMainContext,
         f: F,
     ) -> BoolResult<()> {
         extern "C" fn wrapper<F: FnMut(&[u8]) + Send + 'static>(
             _agent: *mut sys::NiceAgent,
-            _stream_id: sys::guint,
-            _component_id: sys::guint,
-            len: sys::guint,
-            buf: *mut sys::gchar,
-            user_data: sys::gpointer,
+            _stream_id: c_uint,
+            _component_id: c_uint,
+            len: c_uint,
+            buf: *mut c_char,
+            user_data: glib::gpointer,
         ) {
             let f_ptr = user_data as *mut F;
             let f = unsafe { &mut *f_ptr };
@@ -459,7 +475,7 @@ impl NiceAgent {
                 component_id,
                 ctx.0,
                 Some(wrapper::<F>),
-                boxed_f.deref_mut() as *mut F as sys::gpointer,
+                boxed_f.deref_mut() as *mut F as glib::gpointer,
             )
         };
         if res < 0 {
@@ -476,8 +492,8 @@ impl NiceAgent {
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-attach-recv
     pub fn detach_recv<F: FnMut(&[u8]) + Send + 'static>(
         &mut self,
-        stream_id: sys::guint,
-        component_id: sys::guint,
+        stream_id: c_uint,
+        component_id: c_uint,
         ctx: &GMainContext,
     ) -> BoolResult<()> {
         let res = unsafe {
@@ -501,7 +517,7 @@ impl NiceAgent {
 impl Drop for NiceAgent {
     fn drop(&mut self) {
         unsafe {
-            sys::g_object_unref(self.ptr as sys::gpointer);
+            gobject::g_object_unref(self.ptr as *mut gobject::GObject);
         }
     }
 }
@@ -547,7 +563,7 @@ impl NiceCandidate {
         });
         raw.set_addr(SocketAddr::new(sdp.address, sdp.port as u16));
         raw.set_priority(sdp.priority as u32); // FIXME check for oob
-        raw.set_component_id(sdp.component as sys::guint);
+        raw.set_component_id(sdp.component as c_uint);
         raw.set_foundation(&CString::new(sdp.foundation.clone()).unwrap());
         raw
     }
@@ -555,7 +571,7 @@ impl NiceCandidate {
 
 impl NiceCandidateRef {
     /// Returns the `stream_id` field.
-    pub fn stream_id(&self) -> sys::guint {
+    pub fn stream_id(&self) -> c_uint {
         let raw = unsafe { &*self.as_ptr() };
         raw.stream_id
     }
@@ -581,7 +597,7 @@ impl NiceCandidateRef {
     /// Returns the `addr` field.
     pub fn addr(&self) -> SocketAddr {
         let raw = unsafe { &*self.as_ptr() };
-        from_nice_addr(raw.addr)
+        from_nice_addr(&raw.addr)
     }
 
     /// Sets the `addr` field.
@@ -603,13 +619,13 @@ impl NiceCandidateRef {
     }
 
     /// Returns the `component_id` field.
-    pub fn component_id(&self) -> sys::guint {
+    pub fn component_id(&self) -> c_uint {
         let raw = unsafe { &*self.as_ptr() };
         raw.component_id
     }
 
     /// Sets the `component_id` field.
-    pub fn set_component_id(&mut self, component_id: sys::guint) {
+    pub fn set_component_id(&mut self, component_id: c_uint) {
         let raw = unsafe { &mut *self.as_ptr() };
         raw.component_id = component_id;
     }
@@ -802,19 +818,23 @@ pub enum NiceCompatibility {
     OC2007R2 = sys::NiceCompatibility_NICE_COMPATIBILITY_OC2007R2 as isize,
 }
 
-fn from_nice_addr(raw: sys::NiceAddress) -> SocketAddr {
+fn from_nice_addr(raw: &sys::NiceAddress) -> SocketAddr {
     unsafe {
-        match u32::from(raw.s.addr.sa_family) {
-            sys::AF_INET => (
-                Ipv4Addr::from(u32::from_be(raw.s.ip4.sin_addr.s_addr)),
-                u16::from_be(raw.s.ip4.sin_port),
-            )
-                .into(),
-            sys::AF_INET6 => (
-                Ipv6Addr::from(raw.s.ip6.sin6_addr.__in6_u.__u6_addr8),
-                u16::from_be(raw.s.ip4.sin_port),
-            )
-                .into(),
+        match i32::from(raw.s.addr.as_ref().sa_family) {
+            libc::AF_INET => {
+                let ip4 = raw.s.ip4.as_ref();
+                (
+                    Ipv4Addr::from(u32::from_be(ip4.sin_addr.s_addr)),
+                    u16::from_be(ip4.sin_port),
+                ).into()
+            },
+            libc::AF_INET6 => {
+                let ip6 = raw.s.ip6.as_ref();
+                (
+                    Ipv6Addr::from(ip6.sin6_addr.s6_addr),
+                    u16::from_be(ip6.sin6_port),
+                ).into()
+            },
             other => panic!("unknown AF type: {}", other),
         }
     }
@@ -823,25 +843,27 @@ fn from_nice_addr(raw: sys::NiceAddress) -> SocketAddr {
 fn to_nice_addr(addr: &SocketAddr, raw: &mut sys::NiceAddress) {
     match addr {
         SocketAddr::V4(addr) => unsafe {
-            raw.s.ip4.sin_family = sys::AF_INET as u16;
-            raw.s.ip4.sin_port = addr.port().to_be();
-            raw.s.ip4.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
+            let ip4 = raw.s.ip4.as_mut();
+            ip4.sin_family = libc::AF_INET as u16;
+            ip4.sin_port = addr.port().to_be();
+            ip4.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
         },
         SocketAddr::V6(addr) => unsafe {
-            raw.s.ip6.sin6_family = sys::AF_INET6 as u16;
-            raw.s.ip6.sin6_port = addr.port().to_be();
-            raw.s.ip6.sin6_addr.__in6_u.__u6_addr8 = addr.ip().octets();
+            let ip6 = raw.s.ip6.as_mut();
+            ip6.sin6_family = libc::AF_INET6 as u16;
+            ip6.sin6_port = addr.port().to_be();
+            ip6.sin6_addr.s6_addr = addr.ip().octets();
         },
     }
 }
 
-const G_TYPE_BOOLEAN: sys::GType = 5 << sys::G_TYPE_FUNDAMENTAL_SHIFT;
+const G_TYPE_BOOLEAN: glib::GType = 5 << gobject::G_TYPE_FUNDAMENTAL_SHIFT;
 
-/// Creates a new [sys::GValue] of the specified type, containing the default value for that type.
+/// Creates a new [gobject::GValue] of the specified type, containing the default value for that type.
 /// # Safety
 /// `type_` must be valid. This cannot be an enum since glib supports dynamic type registration.
-pub unsafe fn new_g_value(type_: sys::GType) -> sys::GValue {
-    let mut value = std::mem::zeroed::<sys::GValue>();
-    sys::g_value_init(&mut value, type_);
+pub unsafe fn new_g_value(type_: glib::GType) -> gobject::GValue {
+    let mut value = std::mem::zeroed::<gobject::GValue>();
+    gobject::g_value_init(&mut value, type_);
     value
 }
