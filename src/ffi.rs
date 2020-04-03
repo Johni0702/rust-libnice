@@ -679,15 +679,15 @@ fn from_nice_addr(raw: &sys::NiceAddress) -> SocketAddr {
 
 fn to_nice_addr(addr: &SocketAddr, raw: &mut sys::NiceAddress) {
     match addr {
-        SocketAddr::V4(addr) => unsafe {
+        SocketAddr::V4(addr) => {
             raw.s.ip4.sin_family = libc::AF_INET as u16;
             raw.s.ip4.sin_port = addr.port().to_be();
             raw.s.ip4.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
-        },
-        SocketAddr::V6(addr) => unsafe {
+        }
+        SocketAddr::V6(addr) => {
             raw.s.ip6.sin6_family = libc::AF_INET6 as u16;
             raw.s.ip6.sin6_port = addr.port().to_be();
             raw.s.ip6.sin6_addr.s6_addr = addr.ip().octets();
-        },
+        }
     }
 }
