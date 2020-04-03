@@ -1,20 +1,27 @@
 //! See `test::connects_and_transmits_data` for a usage example.
 use crate::ffi;
-use futures::sync::mpsc;
-use futures::Async;
-use futures::AsyncSink;
-use futures::Future;
-use futures::Poll;
+use futures::channel::mpsc;
+use futures::executor::block_on;
+use futures::io::{AsyncRead, AsyncWrite};
+use futures::pin_mut;
+use futures::ready;
+use futures::sink::SinkExt;
+use futures::task::Poll;
 use futures::Sink;
 use futures::Stream as FuturesStream;
 use glib::MainContext;
 use glib::MainLoop;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::future::Future;
 use std::io;
+use std::io::Read;
+use std::ops::DerefMut;
 use std::os::raw::c_uint;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::Context;
 
 pub use crate::ffi::BoolResult;
 pub use crate::ffi::NiceCompatibility;
@@ -25,7 +32,7 @@ type ComponentId = (c_uint, c_uint);
 
 /// A single, high-level ICE agent.
 ///
-/// **Note**: The agent implements [Stream] and needs to be [`poll()`ed] for any of its [Stream]s
+/// **Note**: The agent implements [Future] and needs to be [`poll()`ed] for any of its [Stream]s
 ///           to make progress.
 ///
 /// [`poll()`ed]: Future::poll
@@ -94,7 +101,7 @@ impl Agent {
                 let mut state_sinks = state_sinks_clone.lock().unwrap();
                 let key = (stream_id, component_id);
                 if let Some(sink) = state_sinks.get_mut(&key) {
-                    if sink.send(new_state).wait().is_err() {
+                    if block_on(sink.send(new_state)).is_err() {
                         state_sinks.remove(&key);
                     }
                 }
@@ -173,20 +180,17 @@ impl Drop for Agent {
 }
 
 impl Future for Agent {
-    type Item = (); // never
-    type Error = (); // never
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    type Output = (); // never
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         loop {
-            match self.msgs.poll() {
-                Ok(Async::NotReady) => break,
-                Ok(Async::Ready(Some(msg))) => {
-                    self.handle_msg(msg);
-                }
-                Ok(Async::Ready(None)) => unreachable!(),
-                Err(()) => unreachable!(),
-            }
+            let msg = {
+                let msgs = &mut self.msgs;
+                pin_mut!(msgs);
+                ready!(msgs.poll_next(cx)).expect("msgs stream ended prematurely")
+            };
+            self.handle_msg(msg);
         }
-        Ok(Async::NotReady)
     }
 }
 
@@ -389,17 +393,16 @@ impl Stream {
 
 impl FuturesStream for Stream {
     type Item = Candidate;
-    type Error = (); // never
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.candidates.poll()
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let f = &mut self.candidates;
+        pin_mut!(f);
+        f.poll_next(cx)
     }
 }
 
 /// A single ICE stream component.
 /// It implements [Stream]+[Sink] as well as [AsyncRead]+[AsyncWrite].
-///
-/// [AsyncRead]: tokio_io::AsyncRead
-/// [AsyncWrite]: tokio_io::AsyncWrite
 pub struct StreamComponent {
     _recv_handle: ffi::AttachRecvHandle,
     stream_id: c_uint,
@@ -446,15 +449,17 @@ impl StreamComponent {
     }
 
     /// Updates the current state by polling [state_stream].
-    /// Returns `Err(())` if [state_stream] has been closed.
-    fn poll_state(&mut self) -> Result<(), ()> {
+    /// Returns `Poll::Ready(())` when [state_stream] has been closed.
+    fn poll_state(&mut self, cx: &mut Context) -> Poll<()> {
         loop {
-            match self.state_stream.poll()? {
-                Async::NotReady => return Ok(()),
-                Async::Ready(Some(new_state)) => {
+            let state_stream = &mut self.state_stream;
+            pin_mut!(state_stream);
+            match state_stream.poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(new_state)) => {
                     self.state = new_state;
                 }
-                Async::Ready(None) => return Err(()),
+                Poll::Ready(None) => return Poll::Ready(()),
             }
         }
     }
@@ -467,9 +472,9 @@ pub struct ComponentStateFuture {
 }
 
 impl Future for ComponentStateFuture {
-    type Item = StreamComponent;
-    type Error = (); // stream (or agent) has been closed
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    type Output = Option<StreamComponent>; // none if stream (or agent) has been closed
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         fn rate(state: ComponentState) -> u8 {
             match state {
                 ComponentState::Disconnected => 0,
@@ -480,84 +485,100 @@ impl Future for ComponentStateFuture {
                 ComponentState::Failed => 5,
             }
         }
-        let component = self.component.as_mut().expect("poll called after Ready");
-        component.poll_state()?;
-        if rate(component.state) >= rate(self.target) {
+        let this = self.get_mut();
+        let component = this.component.as_mut().expect("poll called after Ready");
+        if let Poll::Ready(()) = component.poll_state(cx) {
+            return Poll::Ready(None);
+        }
+        if rate(component.state) >= rate(this.target) {
             if component.state == ComponentState::Failed {
-                Err(())
+                Poll::Ready(None)
             } else {
-                Ok(Async::Ready(self.component.take().unwrap()))
+                Poll::Ready(Some(this.component.take().unwrap()))
             }
         } else {
-            Ok(Async::NotReady)
+            Poll::Pending
         }
     }
 }
 
 impl FuturesStream for StreamComponent {
     type Item = Vec<u8>;
-    type Error = (); // never
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        if self.poll_state().is_err() {
-            return Ok(Async::Ready(None));
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        if let Poll::Ready(()) = self.deref_mut().poll_state(cx) {
+            return Poll::Ready(None);
         }
-        self.source.poll().map_err(|()| unreachable!())
+        let source = &mut self.source;
+        pin_mut!(source);
+        source.poll_next(cx)
     }
 }
 
-impl Sink for StreamComponent {
-    type SinkItem = Vec<u8>;
-    type SinkError = (); // never
-    fn start_send(
-        &mut self,
-        item: Self::SinkItem,
-    ) -> Result<AsyncSink<Self::SinkItem>, Self::SinkError> {
+impl Sink<Vec<u8>> for StreamComponent {
+    type Error = (); // never
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
         let msg = ControlMsg::Send((self.stream_id, self.component_id), item);
         let _ = self.sink.unbounded_send(msg);
-        Ok(AsyncSink::Ready)
+        Ok(())
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(Async::Ready(()))
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
-impl io::Read for StreamComponent {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.poll() {
-            Ok(Async::Ready(Some(vec))) => vec.as_slice().read(buf),
-            Ok(Async::Ready(None)) => Ok(0),
-            Ok(Async::NotReady) => Err(io::ErrorKind::WouldBlock.into()),
-            Err(()) => unreachable!(),
+impl AsyncRead for StreamComponent {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        match self.poll_next(cx) {
+            Poll::Ready(Some(vec)) => Poll::Ready(vec.as_slice().read(buf)),
+            Poll::Ready(None) => Poll::Ready(Ok(0)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
-impl tokio_io::AsyncRead for StreamComponent {}
 
-impl io::Write for StreamComponent {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+impl AsyncWrite for StreamComponent {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
         let _ = self.start_send(buf.to_vec());
-        Ok(buf.len())
+        Poll::Ready(Ok(buf.len()))
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
-}
-impl tokio_io::AsyncWrite for StreamComponent {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        Ok(Async::Ready(()))
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::runtime::current_thread::Runtime;
+    use futures::StreamExt;
+    use tokio::runtime;
 
     #[test]
     fn connects_and_transmits_data() {
-        let mut executor = Runtime::new().unwrap();
+        let mut executor = runtime::Builder::new().basic_scheduler().build().unwrap();
 
         // Create ICE agents
         let mut server = Agent::new_rfc5245();
@@ -591,11 +612,11 @@ mod test {
         // Exchange ICE candidates
         // Note that the connection might already start working before all have been exchanged
         // but continuing might improve the network path taken and provide fallback options.
-        for candidate in executor.block_on(server_stream.by_ref().collect()).unwrap() {
+        for candidate in executor.block_on(server_stream.by_ref().collect::<Vec<Candidate>>()) {
             println!("Server candidate: {}", candidate.to_string());
             client_stream.add_remote_candidate(candidate);
         }
-        for candidate in executor.block_on(client_stream.by_ref().collect()).unwrap() {
+        for candidate in executor.block_on(client_stream.by_ref().collect::<Vec<Candidate>>()) {
             println!("Client candidate: {}", candidate.to_string());
             server_stream.add_remote_candidate(candidate);
         }
@@ -617,19 +638,11 @@ mod test {
         // the transport must be assumed to be unreliable!
         assert_eq!(
             Some(vec![42]),
-            executor
-                .block_on(server_component.by_ref().into_future())
-                .map_err(|_| unreachable!())
-                .unwrap()
-                .0
+            executor.block_on(server_component.by_ref().into_future()).0
         );
         assert_eq!(
             Some(vec![1, 2, 3, 4]),
-            executor
-                .block_on(client_component.by_ref().into_future())
-                .map_err(|_| unreachable!())
-                .unwrap()
-                .0
+            executor.block_on(client_component.by_ref().into_future()).0
         );
     }
 }

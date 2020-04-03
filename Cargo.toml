@@ -13,9 +13,9 @@ libc = "0.2"
 glib-sys = "0.9"
 gobject-sys = "0.9"
 glib = "0.9"
-futures = "0.1"
+futures = "0.3"
 webrtc-sdp = "0.3"
-tokio-io = "0.1"
+tokio = { version = "0.2", features = ["rt-core"] }
 
 [dev-dependencies]
-tokio = "0.1"
+tokio = { version = "0.2", features = ["full"] }
