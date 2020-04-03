@@ -1,4 +1,6 @@
 #![allow(clippy::ptr_offset_with_cast)] // glib_wrapper emits these
+#![allow(missing_docs)] // glib_wrapper currently makes it impossible to put docs (or attribs!) on the class struct
+use glib::glib_wrapper;
 use glib::BoolError;
 use glib::MainContext;
 use glib::ObjectExt;
@@ -21,9 +23,6 @@ use webrtc_sdp::attribute_type::SdpAttributeCandidateType;
 
 // Need these for https://github.com/gtk-rs/glib/issues/420f
 use glib::translate::*;
-use glib_sys as glib_ffi;
-use gobject_sys as gobject_ffi;
-use std::mem;
 use std::ptr;
 
 use libnice_sys as sys;
@@ -32,7 +31,7 @@ glib_wrapper! {
     /// See the [libnice] documentation.
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html
-    pub struct NiceAgent(Object<sys::NiceAgent>);
+    pub struct NiceAgent(Object<sys::NiceAgent, NiceAgentClass>);
 
     match fn {
         get_type => || sys::nice_agent_get_type(),
@@ -69,7 +68,7 @@ impl NiceAgent {
         f: F,
     ) -> BoolResult<SignalHandlerId> {
         self.connect("new-candidate-full", false, move |values| {
-            f(&values[1].get().unwrap());
+            f(&values[1].get().unwrap().unwrap());
             None
         })
     }
@@ -80,7 +79,7 @@ impl NiceAgent {
         f: F,
     ) -> BoolResult<SignalHandlerId> {
         self.connect("candidate-gathering-done", false, move |values| {
-            f(values[1].get().unwrap());
+            f(values[1].get().unwrap().unwrap());
             None
         })
     }
@@ -91,9 +90,9 @@ impl NiceAgent {
         F: Fn(c_uint, c_uint, NiceComponentState) + Send + Sync + 'static,
     {
         self.connect("component-state-changed", false, move |values| {
-            let stream_id = values[1].get().unwrap();
-            let component_id = values[2].get().unwrap();
-            let state: c_uint = values[3].get().unwrap();
+            let stream_id = values[1].get().unwrap().unwrap();
+            let component_id = values[2].get().unwrap().unwrap();
+            let state: c_uint = values[3].get().unwrap().unwrap();
             f(stream_id, component_id, state.into());
             None
         })
@@ -122,7 +121,7 @@ impl NiceAgent {
     pub fn add_stream(&self, components: c_uint) -> BoolResult<c_uint> {
         let id = unsafe { sys::nice_agent_add_stream(self.to_glib_none().0, components) };
         if id == 0 {
-            return Err(BoolError("add_stream failed"));
+            return Err(glib_bool_error!("add_stream failed"));
         }
         Ok(id)
     }
@@ -132,7 +131,7 @@ impl NiceAgent {
     ///
     /// [libnice]: https://nice.freedesktop.org/libnice/NiceAgent.html#nice-agent-gather-candidates
     pub fn gather_candidates(&self, stream_id: c_uint) -> BoolResult<()> {
-        BoolError::from_glib(
+        glib_result_from_gboolean!(
             unsafe { sys::nice_agent_gather_candidates(self.to_glib_none().0, stream_id) },
             "gather_candidates failed",
         )
@@ -148,7 +147,7 @@ impl NiceAgent {
         ufrag: &CStr,
         pwd: &CStr,
     ) -> BoolResult<()> {
-        BoolError::from_glib(
+        glib_result_from_gboolean!(
             unsafe {
                 sys::nice_agent_set_remote_credentials(
                     self.to_glib_none().0,
@@ -177,7 +176,7 @@ impl NiceAgent {
             )
         } == 0
         {
-            return Err(BoolError("set_remote_credentials failed"));
+            return Err(glib_bool_error!("set_remote_credentials failed"));
         }
         let ufrag = unsafe { CStr::from_ptr(ufrag_ptr) }.to_owned();
         let pwd = unsafe { CStr::from_ptr(pwd_ptr) }.to_owned();
@@ -219,7 +218,7 @@ impl NiceAgent {
             res
         };
         if res < 0 {
-            return Err(BoolError("set_remote_candidates failed"));
+            return Err(glib_bool_error!("set_remote_candidates failed"));
         }
         Ok(res as usize)
     }
@@ -309,7 +308,7 @@ impl NiceAgent {
             )
         };
         if res < 0 {
-            return Err(BoolError("attach_recv failed"));
+            return Err(glib_bool_error!("attach_recv failed"));
         }
         Ok(AttachRecvHandle(
             self.clone(),
@@ -344,7 +343,7 @@ impl NiceAgent {
             )
         };
         if res < 0 {
-            return Err(BoolError("attach_recv failed"));
+            return Err(glib_bool_error!("attach_recv failed"));
         }
         Ok(())
     }
@@ -680,15 +679,15 @@ pub enum NiceCompatibility {
 
 fn from_nice_addr(raw: &sys::NiceAddress) -> SocketAddr {
     unsafe {
-        match i32::from(raw.s.addr.sa_family) {
+        match i32::from(raw.s.addr.as_ref().sa_family) {
             libc::AF_INET => (
-                Ipv4Addr::from(u32::from_be(raw.s.ip4.sin_addr.s_addr)),
-                u16::from_be(raw.s.ip4.sin_port),
+                Ipv4Addr::from(u32::from_be(raw.s.ip4.as_ref().sin_addr.s_addr)),
+                u16::from_be(raw.s.ip4.as_ref().sin_port),
             )
                 .into(),
             libc::AF_INET6 => (
-                Ipv6Addr::from(raw.s.ip6.sin6_addr.s6_addr),
-                u16::from_be(raw.s.ip4.sin_port),
+                Ipv6Addr::from(raw.s.ip6.as_ref().sin6_addr.s6_addr),
+                u16::from_be(raw.s.ip6.as_ref().sin6_port),
             )
                 .into(),
             other => panic!("unknown AF type: {}", other),
@@ -699,14 +698,16 @@ fn from_nice_addr(raw: &sys::NiceAddress) -> SocketAddr {
 fn to_nice_addr(addr: &SocketAddr, raw: &mut sys::NiceAddress) {
     match addr {
         SocketAddr::V4(addr) => {
-            raw.s.ip4.sin_family = libc::AF_INET as u16;
-            raw.s.ip4.sin_port = addr.port().to_be();
-            raw.s.ip4.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
+            let raw_addr = unsafe { raw.s.ip4.as_mut() };
+            raw_addr.sin_family = libc::AF_INET as u16;
+            raw_addr.sin_port = addr.port().to_be();
+            raw_addr.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
         }
         SocketAddr::V6(addr) => {
-            raw.s.ip6.sin6_family = libc::AF_INET6 as u16;
-            raw.s.ip6.sin6_port = addr.port().to_be();
-            raw.s.ip6.sin6_addr.s6_addr = addr.ip().octets();
+            let raw_addr = unsafe { raw.s.ip6.as_mut() };
+            raw_addr.sin6_family = libc::AF_INET6 as u16;
+            raw_addr.sin6_port = addr.port().to_be();
+            raw_addr.sin6_addr.s6_addr = addr.ip().octets();
         }
     }
 }

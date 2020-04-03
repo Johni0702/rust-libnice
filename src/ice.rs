@@ -49,7 +49,7 @@ impl Agent {
     pub fn new(compat: NiceCompatibility) -> Self {
         // Initialize FFI structs
         let ctx = MainContext::new();
-        let main_loop = MainLoop::new(&ctx, false);
+        let main_loop = MainLoop::new(Some(&ctx), false);
         let mut agent = ffi::NiceAgent::new(&ctx, compat);
 
         // Start main loop on new thread
