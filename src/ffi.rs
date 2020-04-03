@@ -6,12 +6,14 @@ use glib::SignalHandlerId;
 use std::borrow::Borrow;
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::io;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::os::raw::c_char;
 use std::os::raw::c_uint;
+use webrtc_sdp::address::Address;
 use webrtc_sdp::attribute_type::SdpAttributeCandidate;
 use webrtc_sdp::attribute_type::SdpAttributeCandidateTcpType;
 use webrtc_sdp::attribute_type::SdpAttributeCandidateTransport;
@@ -384,9 +386,14 @@ impl NiceCandidate {
         unsafe { Self::from_glib_full(sys::nice_candidate_new(type_ as u32)) }
     }
 
-    // FIXME this should probably return a result instead of unwrapping internally
     /// Creates a new NiceCandidate from an [SdpAttributeCandidate].
-    pub fn from_sdp(sdp: &SdpAttributeCandidate) -> Self {
+    ///
+    /// Note: This method will not resolve any FQDN addresses and will instead
+    ///       return an error if it encounters any.
+    ///       If you wish to support FQDN, you need to resolve them as specified
+    ///       in https://tools.ietf.org/html/rfc5245#section-15.1 before calling
+    ///       this method.
+    pub fn from_sdp_without_fqdn(sdp: &SdpAttributeCandidate) -> io::Result<Self> {
         let mut raw = Self::new(match sdp.c_type {
             SdpAttributeCandidateType::Host => NiceCandidateType::Host,
             SdpAttributeCandidateType::Srflx => NiceCandidateType::ServerReflexive,
@@ -395,21 +402,33 @@ impl NiceCandidate {
         });
         raw.set_transport(match sdp.transport {
             SdpAttributeCandidateTransport::Udp => NiceCandidateTransport::Udp,
-            SdpAttributeCandidateTransport::Tcp => match sdp
-                .tcp_type
-                .as_ref()
-                .expect("transport is tcp but tcp_type is not set")
-            {
+            SdpAttributeCandidateTransport::Tcp => match sdp.tcp_type.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "transport is tcp but tcp_type is not set",
+                )
+            })? {
                 SdpAttributeCandidateTcpType::Active => NiceCandidateTransport::TcpActive,
                 SdpAttributeCandidateTcpType::Passive => NiceCandidateTransport::TcpPassive,
                 SdpAttributeCandidateTcpType::Simultaneous => NiceCandidateTransport::TcpSO,
             },
         });
-        raw.set_addr(SocketAddr::new(sdp.address, sdp.port as u16));
+        raw.set_addr(SocketAddr::new(
+            match sdp.address {
+                Address::Ip(ip) => ip,
+                Address::Fqdn(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "FQDN are not supported by from_sdp_without_fqdn",
+                    ))
+                }
+            },
+            sdp.port as u16,
+        ));
         raw.set_priority(sdp.priority as u32); // FIXME check for oob
         raw.set_component_id(sdp.component as c_uint);
         raw.set_foundation(&CString::new(sdp.foundation.clone()).unwrap());
-        raw
+        Ok(raw)
     }
 
     /// Returns the `stream_id` field.
@@ -507,7 +526,7 @@ impl NiceCandidate {
                 _ => SdpAttributeCandidateTransport::Tcp,
             },
             priority: u64::from(self.priority()),
-            address: address.ip(),
+            address: Address::Ip(address.ip()),
             port: u32::from(address.port()),
             c_type: match self.type_() {
                 NiceCandidateType::Host => SdpAttributeCandidateType::Host,

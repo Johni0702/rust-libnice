@@ -146,7 +146,11 @@ impl Agent {
                 let _ = self.agent.set_remote_credentials(stream_id, &ufrag, &pwd);
             }
             ControlMsg::AddRemoteCandidate((stream_id, component_id), candidate) => {
-                let candidate = ffi::NiceCandidate::from_sdp(&candidate);
+                // TODO resolve FQDN in candidate (if any)
+                let candidate = match ffi::NiceCandidate::from_sdp_without_fqdn(&candidate) {
+                    Ok(candidate) => candidate,
+                    Err(_) => return, // rfc mandates we MUST ignore unsupported lines
+                };
                 let candidate_ref = &candidate;
                 let candidates = std::slice::from_ref(&candidate_ref);
                 let _ = self

@@ -14,8 +14,7 @@ glib-sys = "0.7"
 gobject-sys = "0.7"
 glib = "0.6"
 futures = "0.1"
-# webrtc-sdp = "0.2"
-webrtc-sdp = { git = "https://github.com/nils-ohlmeier/rsdparsa/", rev = "ccf6249" }
+webrtc-sdp = "0.3"
 tokio-io = "0.1"
 
 [dev-dependencies]
