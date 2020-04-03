@@ -353,7 +353,13 @@ impl NiceAgent {
 ///
 /// Dropping this handle will detach **any** currently attached callback for the same component.
 #[must_use = "when an AttachRecvHandle is dropped, it detaches the callback"]
-pub struct AttachRecvHandle(NiceAgent, c_uint, c_uint, MainContext, Box<dyn std::any::Any + Send>);
+pub struct AttachRecvHandle(
+    NiceAgent,
+    c_uint,
+    c_uint,
+    MainContext,
+    Box<dyn std::any::Any + Send>,
+);
 
 impl Drop for AttachRecvHandle {
     fn drop(&mut self) {
