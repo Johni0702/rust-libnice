@@ -255,7 +255,7 @@ impl NiceAgent {
                 stream_id,
                 component_id,
                 buf.len() as c_uint,
-                buf.as_ptr() as *const i8,
+                buf.as_ptr() as *const c_char,
             )
         };
         if res < 0 {
@@ -512,7 +512,7 @@ impl NiceCandidate {
             panic!("foundation too long (>{} bytes)", self_foundation.len());
         }
         for i in 0..foundation.len() {
-            self_foundation[i] = foundation[i] as i8;
+            self_foundation[i] = foundation[i] as c_char;
         }
     }
 
