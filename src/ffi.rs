@@ -705,13 +705,13 @@ fn to_nice_addr(addr: &SocketAddr, raw: &mut sys::NiceAddress) {
     match addr {
         SocketAddr::V4(addr) => {
             let raw_addr = unsafe { raw.s.ip4.as_mut() };
-            raw_addr.sin_family = libc::AF_INET as u16;
+            raw_addr.sin_family = libc::AF_INET as libc::sa_family_t;
             raw_addr.sin_port = addr.port().to_be();
             raw_addr.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
         }
         SocketAddr::V6(addr) => {
             let raw_addr = unsafe { raw.s.ip6.as_mut() };
-            raw_addr.sin6_family = libc::AF_INET6 as u16;
+            raw_addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
             raw_addr.sin6_port = addr.port().to_be();
             raw_addr.sin6_addr.s6_addr = addr.ip().octets();
         }
