@@ -10,9 +10,9 @@ repository = "https://github.com/johni0702/rust-libnice"
 [dependencies]
 libnice-sys = "0.3"
 libc = "0.2"
-glib-sys = "0.9"
-gobject-sys = "0.9"
-glib = "0.9"
+glib-sys = "0.10"
+gobject-sys = "0.10"
+glib = "0.10"
 futures = "0.3"
 webrtc-sdp = "0.3"
 
