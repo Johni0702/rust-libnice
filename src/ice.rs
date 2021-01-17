@@ -578,7 +578,7 @@ mod test {
 
     #[test]
     fn connects_and_transmits_data() {
-        let mut executor = runtime::Builder::new().basic_scheduler().build().unwrap();
+        let executor = runtime::Builder::new_current_thread().build().unwrap();
 
         // Create ICE agents
         let mut server = Agent::new_rfc5245();
