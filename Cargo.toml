@@ -1,6 +1,6 @@
 [package]
 name = "libnice"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["Jonas Herzig <me@johni0702.de>"]
 edition = "2018"
 description = "Safe, high-level Rust bindings to libnice."
